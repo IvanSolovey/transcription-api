@@ -17,7 +17,15 @@ from typing import Optional, List, Dict, Any
 import logging
 from models import LocalTranscriptionService
 from middleware import verify_api_key, verify_master_token, verify_master_token_from_query
+
+# Ініціалізуємо БД перед імпортом api_key_manager
+from app.db.init_db import init_db
+init_db()
+
 from api_auth import api_key_manager
+from app.db.session import get_db_session
+from app.db.repositories.tasks import TaskRepository
+from app.db.models import TaskStatus as TaskStatusEnum
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Ukrainian Audio Transcription API (Local Models)",
-    description="API для транскрипції українського аудіо/відео з визначенням дикторів (локальні моделі)",
+    description="API for transcribing Ukrainian audio/video with local speaker-aware models",
     version="1.0.0"
 )
 
@@ -112,6 +120,7 @@ class TaskStatus(BaseModel):
     language: str
     model_size: str
     use_diarization: bool
+    api_key: Optional[str] = None
 
 class TaskResponse(BaseModel):
     task_id: str
@@ -186,33 +195,61 @@ async def download_file_from_url(url: str) -> str:
             
             return temp_file.name
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Помилка завантаження файлу: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"File download failed: {str(e)}")
 
-def save_task_status(task_id: str, task_status: TaskStatus):
-    """Збереження статусу задачі в JSON файл з автоматичним очищенням старих задач"""
+def save_task_status(task_id: str, task_status: TaskStatus, raise_on_error: bool = False):
+    """
+    Збереження статусу задачі в SQLite.
+    
+    Args:
+        task_id: ID задачі
+        task_status: Об'єкт статусу задачі
+        raise_on_error: If True, re-raise exceptions after logging (Fix 7.14)
+                        If False, only log errors (backward compatible)
+    
+    Raises:
+        Exception: If raise_on_error=True and database operation fails
+    """
     try:
-        tasks_file = "data/tasks.json"
-        os.makedirs("data", exist_ok=True)
-        
-        # Завантажуємо існуючі задачі
-        if os.path.exists(tasks_file):
-            with open(tasks_file, 'r', encoding='utf-8') as f:
-                all_tasks = json.load(f)
-        else:
-            all_tasks = {}
-        
-        # Оновлюємо статус задачі
-        all_tasks[task_id] = task_status.model_dump()
-        
-        # Очищуємо старі задачі (старші 7 днів)
-        cleaned_tasks = clean_old_tasks(all_tasks)
-        
-        # Зберігаємо назад
-        with open(tasks_file, 'w', encoding='utf-8') as f:
-            json.dump(cleaned_tasks, f, ensure_ascii=False, indent=2)
+        with get_db_session() as session:
+            repo = TaskRepository(session)
+            existing = repo.get_by_id(task_id)
             
+            if existing:
+                # Оновлюємо існуючу задачу
+                logger.info(f"Оновлення існуючої задачі {task_id}: status={task_status.status}")
+                repo.update_status(
+                    task_id=task_id,
+                    status=task_status.status,
+                    error_message=task_status.error
+                )
+                
+                if task_status.status == "completed" and task_status.result:
+                    duration = task_status.result.get('duration', 0)
+                    # Зберігаємо result як JSON
+                    import json
+                    result_json = json.dumps(task_status.result, ensure_ascii=False)
+                    repo.mark_completed(task_id, duration_sec=duration, result_json=result_json)
+                elif task_status.status == "failed" and task_status.error:
+                    repo.mark_failed(task_id, task_status.error)
+            else:
+                # Створюємо нову задачу
+                api_key = task_status.api_key if task_status.api_key else 'unknown'
+                logger.info(f"Створення нової задачі {task_id}: api_key={api_key}, file={task_status.file_name}")
+                repo.create(
+                    task_id=task_id,
+                    api_key=api_key,
+                    filename=task_status.file_name,
+                    model_size=task_status.model_size,
+                    has_diarization=task_status.use_diarization,
+                    status=task_status.status
+                )
+                logger.info(f"Задача {task_id} успішно створена в БД")
     except Exception as e:
-        logger.error(f"Помилка збереження статусу задачі {task_id}: {e}")
+        logger.error(f"Помилка збереження статусу задачі {task_id}: {e}", exc_info=True)
+        # Fix 7.14: Re-raise if caller needs to handle the failure
+        if raise_on_error:
+            raise
 
 def clean_old_tasks(all_tasks: dict, max_age_days: int = 7) -> dict:
     """Очищення старих задач з файлу"""
@@ -253,14 +290,40 @@ def clean_old_tasks(all_tasks: dict, max_age_days: int = 7) -> dict:
         return all_tasks  # Повертаємо оригінальний словник при помилці
 
 def load_task_status(task_id: str) -> Optional[TaskStatus]:
-    """Завантаження статусу задачі з JSON файлу"""
+    """Завантаження статусу задачі з SQLite"""
     try:
-        tasks_file = "data/tasks.json"
-        if os.path.exists(tasks_file):
-            with open(tasks_file, 'r', encoding='utf-8') as f:
-                all_tasks = json.load(f)
-                if task_id in all_tasks:
-                    return TaskStatus(**all_tasks[task_id])
+        import json
+        with get_db_session() as session:
+            repo = TaskRepository(session)
+            task = repo.get_by_id(task_id)
+            
+            if not task:
+                return None
+            
+            # Парсимо result_json якщо є
+            result = None
+            if task.result_json:
+                try:
+                    result = json.loads(task.result_json)
+                except:
+                    pass
+            
+            # Конвертуємо Task model в TaskStatus
+            return TaskStatus(
+                task_id=task.id,
+                status=task.status,
+                created_at=task.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                started_at=task.started_at.strftime("%Y-%m-%d %H:%M:%S") if task.started_at else None,  # Fix 7.13
+                completed_at=task.completed_at.strftime("%Y-%m-%d %H:%M:%S") if task.completed_at else None,
+                progress=100 if task.status == "completed" else 0,
+                result=result,
+                error=task.error_message,
+                file_name=task.filename,
+                language="uk",  # TODO: додати в модель
+                model_size=task.model_size,
+                use_diarization=task.has_diarization,
+                api_key=task.api_key
+            )
     except Exception as e:
         logger.error(f"Помилка завантаження статусу задачі {task_id}: {e}")
     return None
@@ -288,7 +351,7 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
         task_status.completed_at = time.strftime("%Y-%m-%d %H:%M:%S")
         task_status.progress = 100
         task_status.result = result
-        save_task_status(task_id, task_status)
+        save_task_status(task_id, task_status, raise_on_error=True)  # Fix 7.14: Must succeed before file cleanup
         
         # Логуємо успішне використання API
         processing_time = time.time() - time.mktime(time.strptime(task_status.started_at, "%Y-%m-%d %H:%M:%S"))
@@ -296,28 +359,43 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
         
         logger.info(f"Задача {task_id} завершена успішно")
         
-    except Exception as e:
-        # Оновлюємо статус на "failed"
-        task_status = tasks[task_id]
-        task_status.status = "failed"
-        task_status.completed_at = time.strftime("%Y-%m-%d %H:%M:%S")
-        task_status.error = str(e)
-        save_task_status(task_id, task_status)
-        
-        # Логуємо невдале використання API
-        processing_time = time.time() - time.mktime(time.strptime(task_status.started_at, "%Y-%m-%d %H:%M:%S"))
-        api_key_manager.log_api_usage(api_key, success=False, processing_time=processing_time)
-        
-        logger.error(f"Помилка обробки задачі {task_id}: {e}")
-    
-    finally:
-        # Видаляємо тимчасовий файл
+        # CRITICAL: Видаляємо файл ТІЛЬКИ після успішного збереження в БД
         if os.path.exists(file_path):
             try:
                 os.unlink(file_path)
                 logger.info(f"Тимчасовий файл видалено: {file_path}")
             except Exception as e:
                 logger.warning(f"Не вдалося видалити тимчасовий файл: {e}")
+        
+    except Exception as e:
+        # Оновлюємо статус на "failed"
+        task_status = tasks[task_id]
+        task_status.status = "failed"
+        task_status.completed_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        task_status.error = str(e)
+        
+        # Спроба зберегти failed статус (можуть бути повторні помилки БД)
+        try:
+            save_task_status(task_id, task_status)
+        except Exception as db_error:
+            logger.error(f"Критична помилка збереження failed статусу для {task_id}: {db_error}")
+        
+        # Логуємо невдале використання API
+        try:
+            processing_time = time.time() - time.mktime(time.strptime(task_status.started_at, "%Y-%m-%d %H:%M:%S"))
+            api_key_manager.log_api_usage(api_key, success=False, processing_time=processing_time)
+        except:
+            pass  # Не блокуємо cleanup якщо started_at відсутній
+        
+        logger.error(f"Помилка обробки задачі {task_id}: {e}")
+        
+        # Видаляємо файл навіть при помилці (файл вже непотрібний)
+        if os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+                logger.info(f"Тимчасовий файл видалено після помилки: {file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Не вдалося видалити тимчасовий файл: {cleanup_error}")
 
 async def worker():
     """Воркер для обробки задач з черги (оптимізований для CPU)"""
@@ -350,7 +428,7 @@ async def worker():
                         task_data['use_diarization'],
                         task_data['api_key']
                     ),
-                    timeout=1800.0  # 30 хвилин максимум
+                    timeout=7200.0  # 2 години максимум
                 )
                 
                 # Позначаємо задачу як виконану
@@ -358,7 +436,24 @@ async def worker():
                 logger.info(f"Воркер {worker_id} завершив задачу {task_data['task_id']}")
                 
             except asyncio.TimeoutError:
-                logger.error(f"Воркер {worker_id}: задача {task_data['task_id']} перевищила час виконання")
+                task_id = task_data['task_id']
+                logger.error(f"Воркер {worker_id}: задача {task_id} перевищила час виконання (2 години)")
+                
+                # CRITICAL: Оновлюємо статус в БД - задача failed через timeout
+                try:
+                    with get_db_session() as session:
+                        repo = TaskRepository(session)
+                        repo.mark_failed(task_id, "Перевищено час обробки (2 години)")
+                    logger.info(f"Задача {task_id} позначена як failed через timeout в БД")
+                except Exception as db_error:
+                    logger.error(f"Помилка оновлення БД для timeout задачі {task_id}: {db_error}")
+                
+                # Оновлюємо memory cache якщо задача там є
+                if task_id in tasks:
+                    tasks[task_id].status = "failed"
+                    tasks[task_id].error = "Перевищено час обробки (2 години)"
+                    tasks[task_id].completed_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                
                 task_queue.task_done()
             
             # Очищуємо пам'ять після кожної задачі
@@ -398,14 +493,14 @@ async def transcribe_audio_file(
     """
     
     if not file and not url:
-        raise HTTPException(status_code=400, detail="Необхідно надати або файл, або URL")
+        raise HTTPException(status_code=400, detail="Either a file or URL must be provided")
     
     if file and url:
-        raise HTTPException(status_code=400, detail="Надайте або файл, або URL, але не обидва")
+        raise HTTPException(status_code=400, detail="Provide either a file or a URL, not both")
     
     # Валідація розміру моделі
     if model_size not in ["tiny", "base", "small", "medium", "large", "auto"]:
-        raise HTTPException(status_code=400, detail="Розмір моделі повинен бути: tiny, base, small, medium, large або auto")
+        raise HTTPException(status_code=400, detail="Model size must be one of: tiny, base, small, medium, large, auto")
     
     # Генеруємо унікальний ID задачі
     task_id = str(uuid.uuid4())
@@ -441,18 +536,19 @@ async def transcribe_audio_file(
             file_name=file_name,
             language=language,
             model_size=model_size,
-            use_diarization=use_diarization
+            use_diarization=use_diarization,
+            api_key=api_key
         )
         
         # Зберігаємо статус задачі
         tasks[task_id] = task_status
-        save_task_status(task_id, task_status)
+        save_task_status(task_id, task_status, raise_on_error=True)  # Fix 7.14: Must succeed or return error
         
         # Перевіряємо розмір черги перед додаванням задачі
         if task_queue.qsize() >= 20:  # Якщо черга майже повна (залишаємо 5 місць)
             raise HTTPException(
                 status_code=503, 
-                detail="Сервер перевантажений. Спробуйте пізніше."
+                detail="Server overloaded. Please try again later."
             )
         
         # Додаємо задачу в чергу
@@ -470,14 +566,28 @@ async def transcribe_audio_file(
         return TaskResponse(
             task_id=task_id,
             status="queued",
-            message=f"Файл {file_name} додано в чергу обробки. Використовуйте /task/{task_id} для відстеження статусу."
+            message=f"File {file_name} queued for processing. Use /task/{task_id} to track progress."
         )
         
-    except HTTPException:
-        raise
+    except HTTPException as http_exc:
+        # CRITICAL FIX 7.5: Cleanup temp file if task creation failed
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"Очищено temp файл після помилки: {temp_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Не вдалося видалити temp файл: {cleanup_error}")
+        raise http_exc
     except Exception as e:
+        # CRITICAL FIX 7.5: Cleanup temp file on unexpected error
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"Очищено temp файл після помилки: {temp_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Не вдалося видалити temp файл: {cleanup_error}")
         logger.error(f"Неочікувана помилка: {e}")
-        raise HTTPException(status_code=500, detail=f"Внутрішня помилка сервера: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/transcribe-with-diarization", response_model=TranscriptionResponse)
 async def transcribe_with_diarization(
@@ -498,14 +608,14 @@ async def transcribe_with_diarization(
     """
     
     if not file and not url:
-        raise HTTPException(status_code=400, detail="Необхідно надати або файл, або URL")
+        raise HTTPException(status_code=400, detail="Either a file or URL must be provided")
     
     if file and url:
-        raise HTTPException(status_code=400, detail="Надайте або файл, або URL, але не обидва")
+        raise HTTPException(status_code=400, detail="Provide either a file or a URL, not both")
     
     # Валідація розміру моделі
     if model_size not in ["tiny", "base", "small", "medium", "large", "auto"]:
-        raise HTTPException(status_code=400, detail="Розмір моделі повинен бути: tiny, base, small, medium, large або auto")
+        raise HTTPException(status_code=400, detail="Model size must be one of: tiny, base, small, medium, large, auto")
     
     temp_file_path = None
     
@@ -548,7 +658,7 @@ async def transcribe_with_diarization(
         raise
     except Exception as e:
         logger.error(f"Неочікувана помилка: {e}")
-        raise HTTPException(status_code=500, detail=f"Внутрішня помилка сервера: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     
     finally:
         # Очищення тимчасових файлів
@@ -588,45 +698,151 @@ async def get_task_status(task_id: str):
     if task_status:
         return task_status
     
-    raise HTTPException(status_code=404, detail="Задача не знайдена")
+    raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/tasks")
 async def list_tasks(limit: int = 50, status: Optional[str] = None):
     """Отримання списку задач з фільтрацією"""
     try:
-        tasks_file = "data/tasks.json"
-        if not os.path.exists(tasks_file):
-            return {"tasks": [], "total": 0}
-        
-        with open(tasks_file, 'r', encoding='utf-8') as f:
-            all_tasks = json.load(f)
-        
-        # Фільтруємо за статусом якщо вказано
-        if status:
-            filtered_tasks = {k: v for k, v in all_tasks.items() if v.get('status') == status}
-        else:
-            filtered_tasks = all_tasks
-        
-        # Сортуємо за часом створення (найновіші спочатку)
-        sorted_tasks = sorted(
-            filtered_tasks.items(), 
-            key=lambda x: x[1].get('created_at', ''), 
-            reverse=True
-        )
-        
-        # Обмежуємо кількість результатів
-        limited_tasks = sorted_tasks[:limit]
-        
-        return {
-            "tasks": [TaskStatus(**task_data) for _, task_data in limited_tasks],
-            "total": len(filtered_tasks),
-            "limit": limit,
-            "status_filter": status
-        }
+        with get_db_session() as session:
+            repo = TaskRepository(session)
+            
+            # Фільтруємо за статусом якщо вказано
+            if status:
+                db_tasks = repo.get_by_status(status, limit=limit)
+            else:
+                # Отримуємо всі задачі з сортуванням за датою
+                from sqlmodel import select
+                from app.db.models import Task
+                statement = select(Task).order_by(Task.created_at.desc()).limit(limit)
+                db_tasks = list(session.exec(statement).all())
+            
+            # Конвертуємо в TaskStatus
+            tasks_list = []
+            for task in db_tasks:
+                result = None
+                if task.result_json:
+                    try:
+                        result = json.loads(task.result_json)
+                    except:
+                        pass
+                
+                tasks_list.append(TaskStatus(
+                    task_id=task.id,
+                    status=task.status,
+                    created_at=task.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    started_at=task.started_at.strftime("%Y-%m-%d %H:%M:%S") if task.started_at else None,  # Fix 7.13
+                    completed_at=task.completed_at.strftime("%Y-%m-%d %H:%M:%S") if task.completed_at else None,
+                    progress=100 if task.status == "completed" else 0,
+                    result=result,
+                    error=task.error_message,
+                    file_name=task.filename,
+                    language="uk",
+                    model_size=task.model_size,
+                    use_diarization=task.has_diarization,
+                    api_key=task.api_key
+                ))
+            
+            return {
+                "tasks": tasks_list,
+                "total": len(db_tasks),
+                "limit": limit,
+                "status_filter": status
+            }
         
     except Exception as e:
         logger.error(f"Помилка отримання списку задач: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка отримання списку задач: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch task list: {str(e)}")
+
+@app.get("/my-tasks")
+async def get_my_tasks(
+    api_key: str = Depends(verify_api_key),
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None
+):
+    """
+    Отримання історії транскрипцій поточного користувача.
+    
+    Повертає всі задачі, створені з поточним API ключем,
+    відсортовані за датою створення (нові спочатку).
+    
+    Args:
+        limit: Кількість задач на сторінці (макс. 200)
+        offset: Зміщення для пагінації (default 0)
+        status: Фільтр за статусом (queued/processing/completed/failed/cancelled)
+    
+    Returns:
+        {
+            "tasks": [...],
+            "total": int,
+            "limit": int,
+            "offset": int,
+            "has_more": bool
+        }
+    """
+    # Валідація параметрів
+    if limit > 200:
+        raise HTTPException(status_code=400, detail="Maximum limit is 200")
+    
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="Offset must be >= 0")
+    
+    try:
+        with get_db_session() as session:
+            repo = TaskRepository(session)
+            
+            # Використовуємо новий метод для пагінації
+            db_tasks, total_count = repo.get_by_api_key_paginated(
+                api_key=api_key,
+                limit=limit + 1,  # Запитуємо +1 щоб визначити has_more
+                offset=offset,
+                status=status
+            )
+            
+            # Визначаємо чи є ще задачі
+            has_more = len(db_tasks) > limit
+            if has_more:
+                db_tasks = db_tasks[:limit]
+            
+            # Конвертуємо в TaskStatus
+            tasks_list = []
+            for task in db_tasks:
+                result = None
+                if task.result_json:
+                    try:
+                        result = json.loads(task.result_json)
+                    except:
+                        pass
+                
+                tasks_list.append(TaskStatus(
+                    task_id=task.id,
+                    status=task.status,
+                    created_at=task.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    started_at=task.started_at.strftime("%Y-%m-%d %H:%M:%S") if task.started_at else None,
+                    completed_at=task.completed_at.strftime("%Y-%m-%d %H:%M:%S") if task.completed_at else None,
+                    progress=100 if task.status == "completed" else 0,
+                    result=result,
+                    error=task.error_message,
+                    file_name=task.filename,
+                    language="uk",
+                    model_size=task.model_size,
+                    use_diarization=task.has_diarization,
+                    api_key=task.api_key
+                ))
+            
+            return {
+                "tasks": tasks_list,
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": has_more,
+                "status_filter": status
+            }
+        
+    except Exception as e:
+        logger.error(f"Помилка отримання історії задач: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch history: {str(e)}")
 
 @app.delete("/task/{task_id}")
 async def cancel_task(task_id: str, api_key: str = Depends(verify_api_key)):
@@ -634,19 +850,19 @@ async def cancel_task(task_id: str, api_key: str = Depends(verify_api_key)):
     if task_id not in tasks:
         task_status = load_task_status(task_id)
         if not task_status:
-            raise HTTPException(status_code=404, detail="Задача не знайдена")
+            raise HTTPException(status_code=404, detail="Task not found")
         tasks[task_id] = task_status
     
     task_status = tasks[task_id]
     
     if task_status.status == "completed":
-        raise HTTPException(status_code=400, detail="Задача вже завершена")
+        raise HTTPException(status_code=400, detail="Task already completed")
     
     if task_status.status == "processing":
-        raise HTTPException(status_code=400, detail="Задача вже обробляється, не можна скасувати")
+        raise HTTPException(status_code=400, detail="Task already processing and cannot be cancelled")
     
     if task_status.status == "failed":
-        raise HTTPException(status_code=400, detail="Задача вже провалена")
+        raise HTTPException(status_code=400, detail="Task already failed")
     
     # Видаляємо задачу з черги (якщо вона там є)
     # Примітка: це спрощена реалізація, в реальному проекті потрібно більш складну логіку
@@ -654,7 +870,7 @@ async def cancel_task(task_id: str, api_key: str = Depends(verify_api_key)):
     task_status.completed_at = time.strftime("%Y-%m-%d %H:%M:%S")
     save_task_status(task_id, task_status)
     
-    return {"message": f"Задача {task_id} скасована"}
+    return {"message": f"Task {task_id} was cancelled"}
 
 
 # Адмін endpoints
@@ -675,7 +891,7 @@ async def generate_api_key(
         )
     except Exception as e:
         logger.error(f"Помилка генерації API ключа: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка генерації ключа: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate API key: {str(e)}")
 
 @app.post("/admin/delete-key")
 async def delete_api_key(
@@ -686,12 +902,12 @@ async def delete_api_key(
     try:
         success = api_key_manager.delete_api_key(request.api_key)
         if success:
-            return {"message": "API ключ успішно видалено"}
+            return {"message": "API key deleted successfully"}
         else:
-            raise HTTPException(status_code=404, detail="API ключ не знайдено")
+            raise HTTPException(status_code=404, detail="API key not found")
     except Exception as e:
         logger.error(f"Помилка видалення API ключа: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка видалення ключа: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete API key: {str(e)}")
 
 @app.get("/admin/list-keys")
 async def list_api_keys(master_token: str = Depends(verify_master_token)):
@@ -706,7 +922,7 @@ async def list_api_keys(master_token: str = Depends(verify_master_token)):
         }
     except Exception as e:
         logger.error(f"Помилка отримання списку ключів: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка отримання списку: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch API key list: {str(e)}")
 
 @app.post("/admin/update-key-notes")
 async def update_key_notes(
@@ -717,12 +933,12 @@ async def update_key_notes(
     try:
         success = api_key_manager.update_api_key_notes(request.api_key, request.notes)
         if success:
-            return {"message": "Нотатки успішно оновлено"}
+            return {"message": "Notes updated successfully"}
         else:
-            raise HTTPException(status_code=404, detail="API ключ не знайдено")
+            raise HTTPException(status_code=404, detail="API key not found")
     except Exception as e:
         logger.error(f"Помилка оновлення нотаток: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка оновлення нотаток: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update notes: {str(e)}")
 
 @app.post("/admin/toggle-key-status")
 async def toggle_key_status(
@@ -734,13 +950,13 @@ async def toggle_key_status(
         success = api_key_manager.toggle_api_key_status(request.api_key)
         if success:
             key_info = api_key_manager.get_api_key_info(request.api_key)
-            status = "активний" if key_info.get("active", True) else "неактивний"
-            return {"message": f"API ключ тепер {status}"}
+            status = "active" if key_info.get("active", True) else "inactive"
+            return {"message": f"API key is now {status}"}
         else:
-            raise HTTPException(status_code=404, detail="API ключ не знайдено")
+            raise HTTPException(status_code=404, detail="API key not found")
     except Exception as e:
         logger.error(f"Помилка зміни статусу ключа: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка зміни статусу: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to change status: {str(e)}")
 
 @app.get("/admin/key-details/{api_key}")
 async def get_key_details(
@@ -766,10 +982,10 @@ async def get_key_details(
                 "notes": key_info.get("notes", "")
             }
         else:
-            raise HTTPException(status_code=404, detail="API ключ не знайдено")
+            raise HTTPException(status_code=404, detail="API key not found")
     except Exception as e:
         logger.error(f"Помилка отримання деталей ключа: {e}")
-        raise HTTPException(status_code=500, detail=f"Помилка отримання деталей: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch key details: {str(e)}")
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(request: Request):
@@ -790,8 +1006,8 @@ async def admin_panel(request: Request):
         <body>
             <div class="error">
                 <h1>🔒 Access Denied</h1>
-                <p>Недійсний або відсутній master токен</p>
-                <p>Використовуйте: <code>/admin?master_token=YOUR_MASTER_TOKEN</code></p>
+                <p>Missing or invalid master token</p>
+                <p>Use: <code>/admin?master_token=YOUR_MASTER_TOKEN</code></p>
             </div>
         </body>
         </html>
@@ -815,7 +1031,7 @@ async def admin_panel(request: Request):
             <td>{key["client_name"]}</td>
             <td>{key["created_at"][:19]}</td>
             <td>
-                <button onclick="deleteKey('{key["key"]}')" class="delete-btn">Видалити</button>
+                <button onclick="deleteKey('{key["key"]}')" class="delete-btn">Delete</button>
             </td>
         </tr>
         """
@@ -851,39 +1067,39 @@ async def admin_panel(request: Request):
     </head>
     <body>
         <div class="container">
-            <h1>🔑 API Admin Panel</h1>
+            <h1>Admin Panel</h1>
             
             <div class="stats">
                 <div class="stat-card">
                     <div class="stat-number">{stats["total_keys"]}</div>
-                    <div>Всього ключів</div>
+                    <div>Total keys</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-number">{stats["active_keys"]}</div>
-                    <div>Активних</div>
+                    <div>Active</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-number">{stats["inactive_keys"]}</div>
-                    <div>Неактивних</div>
+                    <div>Inactive</div>
                 </div>
             </div>
             
             <div class="form-section">
-                <h3>➕ Створити новий API ключ</h3>
-                <input type="text" id="clientName" placeholder="Назва клієнта" />
-                <button class="generate-btn" onclick="generateKey()">Генерувати ключ</button>
+                <h3>➕ Create a new API key</h3>
+                <input type="text" id="clientName" placeholder="Client name" />
+                <button class="generate-btn" onclick="generateKey()">Generate key</button>
                 <div id="newKey" class="new-key"></div>
             </div>
             
             <div class="form-section">
-                <h3>📋 Список API ключів</h3>
+                <h3>📋 API key list</h3>
                 <table>
                     <thead>
                         <tr>
-                            <th>API Ключ</th>
-                            <th>Клієнт</th>
-                            <th>Створено</th>
-                            <th>Дії</th>
+                            <th>API key</th>
+                            <th>Client</th>
+                            <th>Created</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -897,7 +1113,7 @@ async def admin_panel(request: Request):
             async function generateKey() {{
                 const clientName = document.getElementById('clientName').value;
                 if (!clientName) {{
-                    alert('Введіть назву клієнта');
+                    alert('Enter a client name');
                     return;
                 }}
                 
@@ -915,25 +1131,25 @@ async def admin_panel(request: Request):
                         const data = await response.json();
                         const newKeyDiv = document.getElementById('newKey');
                         newKeyDiv.innerHTML = `
-                            <h4>✅ Новий API ключ створено!</h4>
-                            <p><strong>Клієнт:</strong> ${{data.client_name}}</p>
-                            <p><strong>API ключ:</strong> <code>${{data.api_key}}</code></p>
-                            <p><strong>Створено:</strong> ${{data.created_at}}</p>
-                            <p style="color: #d32f2f;"><strong>⚠️ Збережіть цей ключ! Він більше не буде показаний.</strong></p>
+                            <h4>✅ New API key created!</h4>
+                            <p><strong>Client:</strong> ${{data.client_name}}</p>
+                            <p><strong>API key:</strong> <code>${{data.api_key}}</code></p>
+                            <p><strong>Created:</strong> ${{data.created_at}}</p>
+                            <p style="color: #d32f2f;"><strong>⚠️ Save this key! It will not be shown again.</strong></p>
                         `;
                         newKeyDiv.style.display = 'block';
                         document.getElementById('clientName').value = '';
                         setTimeout(() => location.reload(), 2000);
                     }} else {{
-                        alert('Помилка створення ключа');
+                        alert('Failed to create API key');
                     }}
                 }} catch (error) {{
-                    alert('Помилка: ' + error.message);
+                    alert('Error: ' + error.message);
                 }}
             }}
             
             async function deleteKey(apiKey) {{
-                if (!confirm('Ви впевнені, що хочете видалити цей API ключ?')) {{
+                if (!confirm('Are you sure you want to delete this API key?')) {{
                     return;
                 }}
                 
@@ -948,13 +1164,13 @@ async def admin_panel(request: Request):
                     }});
                     
                     if (response.ok) {{
-                        alert('API ключ видалено');
+                        alert('API key deleted');
                         location.reload();
                     }} else {{
-                        alert('Помилка видалення ключа');
+                        alert('Failed to delete API key');
                     }}
                 }} catch (error) {{
-                    alert('Помилка: ' + error.message);
+                    alert('Error: ' + error.message);
                 }}
             }}
         </script>
@@ -980,7 +1196,7 @@ async def api_info():
     return {
         "message": "Ukrainian Audio Transcription API (Local Models)",
         "version": "1.0.0",
-        "description": "API для транскрипції українського аудіо/відео з визначенням дикторів (локальні моделі)",
+        "description": "API for Ukrainian audio/video transcription with local speaker-aware models",
         "endpoints": {
             "transcribe": "/transcribe (POST, requires API key, returns task_id)",
             "transcribe_with_diarization": "/transcribe-with-diarization (POST, requires API key)",
@@ -1001,21 +1217,21 @@ async def api_info():
             "admin_key_details": "/admin/key-details/{api_key} (GET, requires master token)"
         },
         "features": [
-            "Локальна транскрипція (faster-whisper)",
-            "Quantized моделі для CPU",
-            "Проста діаризація Оператор/Клієнт (WebRTC VAD)",
-            "Підтримка файлів та URL",
-            "Українська мова",
-            "Оптимізація для CPU та GPU",
-            "Система API токенів"
+            "Local transcription via faster-whisper",
+            "Quantized models optimized for CPU",
+            "Simple operator/customer diarization (WebRTC VAD)",
+            "Supports file uploads and remote URLs",
+            "Ukrainian-first language support",
+            "Optimized for CPU and GPU nodes",
+            "API token management"
         ],
         "supported_formats": [
-            "Аудіо: WAV, MP3, M4A, FLAC, OGG",
-            "Відео: MP4, AVI, MOV, MKV"
+            "Audio: WAV, MP3, M4A, FLAC, OGG",
+            "Video: MP4, AVI, MOV, MKV"
         ],
         "model_sizes": ["tiny", "base", "small", "medium", "large", "auto"],
         "languages": ["uk", "en", "ru", "pl", "de", "fr", "es", "it"],
-        "note": "Для використання API потрібен API ключ. Отримайте його у адміністратора."
+        "note": "An API key is required. Contact the administrator to obtain one."
     }
 
 if __name__ == "__main__":

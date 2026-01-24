@@ -13,7 +13,6 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 10px;
             margin: 0;
@@ -439,6 +438,27 @@
             background: #f57c00;
         }
 
+        .copy-notice {
+            position: fixed;
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.85em;
+            font-weight: 600;
+            box-shadow: 0 8px 20px rgba(46, 125, 50, 0.25);
+            opacity: 0;
+            transform: translate(-50%, -8px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            pointer-events: none;
+            z-index: 1200;
+        }
+
+        .copy-notice.visible {
+            opacity: 1;
+            transform: translate(-50%, -20px);
+        }
+
         /* Адаптивність для кнопок */
         @media (max-width: 768px) {
             .copy-btn {
@@ -471,6 +491,249 @@
 
         .speaker-operator { background: #2196f3; }
         .speaker-client { background: #ff9800; }
+
+        /* Історія задач */
+        .history-item {
+            background: white;
+            padding: 18px;
+            border-radius: 12px;
+            margin: 6px 0;
+            border-left: 4px solid #1976d2;
+            border: 1px solid #e3eaf7;
+            box-shadow: 0 8px 18px rgba(21, 101, 192, 0.08);
+        }
+
+        #historyList .history-item:nth-child(even) {
+            background: #f7f9fe;
+        }
+
+        #historyList .history-item:nth-child(odd) {
+            background: #ffffff;
+        }
+
+        .history-item.completed {
+            border-left-color: #4caf50;
+        }
+
+        .history-item.failed {
+            border-left-color: #f44336;
+        }
+
+        .history-item.processing {
+            border-left-color: #ff9800;
+        }
+
+        .history-item.queued {
+            border-left-color: #9e9e9e;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            gap: 10px;
+        }
+
+        .history-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .history-status.completed {
+            background: #4caf50;
+            color: white;
+        }
+
+        .history-status.failed {
+            background: #f44336;
+            color: white;
+        }
+
+        .history-status.processing {
+            background: #ff9800;
+            color: white;
+        }
+
+        .history-status.queued {
+            background: #9e9e9e;
+            color: white;
+        }
+
+        .history-details {
+            font-size: 0.9em;
+            color: #4a5568;
+            display: none;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px dashed #cfd8e6;
+        }
+
+        .history-details.active {
+            display: block;
+        }
+
+        .history-details div {
+            margin: 5px 0;
+        }
+
+        .history-actions {
+            margin-top: 16px;
+        }
+
+        .history-actions button {
+            font-size: 0.9em;
+            padding: 6px 12px;
+            margin-right: 8px;
+        }
+
+        .history-details-btn {
+            border: none;
+            background: #e3f2fd;
+            color: #0d47a1;
+            padding: 6px 18px;
+            border-radius: 999px;
+            font-weight: 600;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: background 0.2s ease, transform 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: inset 0 0 0 1px rgba(21, 101, 192, 0.15);
+        }
+
+        .history-details-btn:hover {
+            background: #bbdefb;
+            transform: translateY(-1px);
+        }
+
+        .history-details-btn:focus-visible {
+            outline: 2px solid #1565c0;
+            outline-offset: 2px;
+        }
+
+        /* Модальне вікно */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 90vh;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            animation: slideDown 0.3s;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.8em;
+        }
+
+        .modal-close {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.3s;
+        }
+
+        .modal-close:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .modal-body {
+            padding: 20px 30px;
+            max-height: calc(90vh - 150px);
+            overflow-y: auto;
+        }
+
+        .search-box {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: #1976d2;
+        }
+
+        .filter-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .filter-controls select {
+            flex: 1;
+            min-width: 150px;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
 
         /* Адаптивність для статусу задачі */
         @media (max-width: 768px) {
@@ -601,8 +864,8 @@
                     <select id="modelSize">
                         <option value="tiny">Tiny (найшвидша)</option>
                         <option value="base">Base</option>
-                        <option value="small" selected>Small (рекомендована)</option>
-                        <option value="medium">Medium</option>
+                        <option value="small">Small (рекомендована)</option>
+                        <option value="medium" selected>Medium</option>
                         <option value="large">Large (найточніша)</option>
                         <option value="auto">Auto</option>
                     </select>
@@ -612,6 +875,9 @@
                 <div class="input-group">
                     <button class="btn btn-primary" id="transcribeBtn" onclick="startTranscription()" disabled>
                         🎤 Почати транскрипцію
+                    </button>
+                    <button class="btn btn-secondary" onclick="showHistory()">
+                        📜 Історія транскрипцій
                     </button>
                 </div>
 
@@ -626,7 +892,7 @@
                 <h3>📝 Результат транскрипції</h3>
                 
                 <div class="input-group">
-                    <button class="copy-btn" onclick="copyToClipboard()">📋 Копіювати текст</button>
+                    <button class="copy-btn" data-copy-target="result" onclick="copyToClipboard(event)">📋 Копіювати текст</button>
                     <button class="copy-btn" onclick="downloadResult()">💾 Завантажити результат</button>
                 </div>
 
@@ -638,6 +904,44 @@
             <!-- Повідомлення -->
             <div class="error" id="errorMessage"></div>
             <div class="success" id="successMessage"></div>
+        </div>
+    </div>
+
+    <!-- Модальне вікно історії -->
+    <div id="historyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📜 Історія транскрипцій</h2>
+                <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="search-box">
+                    <input 
+                        type="text" 
+                        id="historySearch" 
+                        placeholder="🔍 Пошук по назві файлу..." 
+                        oninput="filterHistory()"
+                    />
+                    <div class="filter-controls">
+                        <select id="historyStatusFilter" onchange="onHistoryFilterChange()">
+                            <option value="">Всі статуси</option>
+                            <option value="completed" selected>Завершені</option>
+                            <option value="failed">Невдалі</option>
+                            <option value="processing">В обробці</option>
+                            <option value="queued">В черзі</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="loadHistory()" style="min-width: 120px;">🔄 Оновити</button>
+                    </div>
+                </div>
+
+                <div id="historyList"></div>
+                
+                <div class="input-group" style="margin-top: 20px;">
+                    <button class="btn btn-secondary" id="loadMoreBtn" onclick="loadMore()" style="display: none;">
+                        Завантажити більше
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -664,27 +968,40 @@
                 return;
             }
 
-            apiKey = key;
-            
-            // Збереження API ключа якщо вибрано "Запам'ятати мене"
-            if (rememberMe && rememberMe.checked) {
-                localStorage.setItem('transcription_api_key', key);
-                localStorage.setItem('transcription_remember_me', 'true');
-            } else {
-                // Видалення збереженого ключа якщо не вибрано
-                localStorage.removeItem('transcription_api_key');
-                localStorage.removeItem('transcription_remember_me');
-            }
-            
+            // Спочатку перевіряємо чи API ключ валідний
             try {
-                const response = await fetch('/health');
-                if (response.ok) {
-                    showTranscriptionSection();
-                    hideError();
-                    showSuccess('API ключ прийнято! Можете почати транскрипцію.');
-                } else {
-                    showError('Помилка підключення до сервера');
+                const testResponse = await fetch('/my-tasks?limit=1&offset=0', {
+                    headers: {
+                        'Authorization': `Bearer ${key}`
+                    }
+                });
+
+                if (!testResponse.ok) {
+                    if (testResponse.status === 401) {
+                        showError('Неправильний API ключ. Перевірте і спробуйте знову.');
+                    } else {
+                        showError('Помилка перевірки API ключа');
+                    }
+                    return;
                 }
+
+                // API ключ валідний - зберігаємо
+                apiKey = key;
+                
+                // Збереження API ключа якщо вибрано "Запам'ятати мене"
+                if (rememberMe && rememberMe.checked) {
+                    localStorage.setItem('transcription_api_key', key);
+                    localStorage.setItem('transcription_remember_me', 'true');
+                } else {
+                    // Видалення збереженого ключа якщо не вибрано
+                    localStorage.removeItem('transcription_api_key');
+                    localStorage.removeItem('transcription_remember_me');
+                }
+                
+                showTranscriptionSection();
+                hideError();
+                showSuccess('✅ API ключ підтверджено! Можете почати транскрипцію.');
+                
             } catch (error) {
                 showError('Помилка підключення: ' + error.message);
             }
@@ -697,6 +1014,348 @@
             
             if (authSection) authSection.style.display = 'none';
             if (transcriptionSection) transcriptionSection.style.display = 'block';
+        }
+
+        // Історія транскрипцій
+        let currentOffset = 0;
+        const historyLimit = 10;
+        let allHistoryTasks = []; // Зберігаємо всі завантажені задачі для пошуку
+
+        async function resolveDefaultHistoryStatus() {
+            if (!apiKey) {
+                return 'completed';
+            }
+            try {
+                const response = await fetch(`/my-tasks?limit=1&offset=0&status=processing`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+                        return 'processing';
+                    }
+                }
+            } catch (error) {
+                console.warn('Не вдалося перевірити активні задачі:', error);
+            }
+            return 'completed';
+        }
+
+        function onHistoryFilterChange() {
+            // Скидаємо пошук при зміні фільтра
+            document.getElementById('historySearch').value = '';
+            loadHistory();
+        }
+
+        async function showHistory() {
+            if (!apiKey) {
+                showError('Спочатку авторизуйтесь для перегляду історії');
+                return;
+            }
+
+            const filterSelect = document.getElementById('historyStatusFilter');
+            if (filterSelect) {
+                const defaultStatus = await resolveDefaultHistoryStatus();
+                filterSelect.value = defaultStatus;
+            }
+
+            // Відкриваємо модальне вікно
+            const modal = document.getElementById('historyModal');
+            modal.style.display = 'block';
+            
+            // Завантажуємо історію
+            await loadHistory();
+        }
+
+        function closeHistoryModal() {
+            const modal = document.getElementById('historyModal');
+            modal.style.display = 'none';
+        }
+
+        // Закриття модального вікна при кліку поза ним
+        window.onclick = function(event) {
+            const modal = document.getElementById('historyModal');
+            if (event.target == modal) {
+                closeHistoryModal();
+            }
+        }
+
+        // Закриття модального вікна при натисканні ESC
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeHistoryModal();
+            }
+        });
+
+        function filterHistory() {
+            const searchTerm = document.getElementById('historySearch').value.toLowerCase();
+            
+            if (!searchTerm) {
+                // Якщо пошук порожній, показуємо всі задачі
+                displayHistory({ tasks: allHistoryTasks, total: allHistoryTasks.length, has_more: false }, true);
+                return;
+            }
+
+            // Фільтруємо задачі по назві файлу
+            const filteredTasks = allHistoryTasks.filter(task => 
+                task.file_name && task.file_name.toLowerCase().includes(searchTerm)
+            );
+
+            // Показуємо відфільтровані результати
+            displayHistory({ tasks: filteredTasks, total: filteredTasks.length, has_more: false }, true);
+            
+            // Ховаємо кнопку "Завантажити більше" при пошуку
+            document.getElementById('loadMoreBtn').style.display = 'none';
+        }
+
+        async function loadHistory(reset = true) {
+            if (!apiKey) {
+                const historyList = document.getElementById('historyList');
+                if (historyList) {
+                    historyList.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">⚠️ Спочатку авторизуйтесь для перегляду історії</p>';
+                }
+                return;
+            }
+
+            console.log('Loading history with API key:', apiKey.substring(0, 8) + '...');
+
+            if (reset) {
+                currentOffset = 0;
+                allHistoryTasks = [];
+            }
+
+            const statusFilter = document.getElementById('historyStatusFilter')?.value || '';
+            let url = `/my-tasks?limit=${historyLimit}&offset=${currentOffset}`;
+            
+            if (statusFilter) {
+                url += `&status=${statusFilter}`;
+            }
+
+            console.log('Fetching:', url);
+
+            try {
+                const response = await fetch(url, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        showError('Неправильний API ключ або сесія закінчилась');
+                    } else {
+                        showError(`Помилка завантаження історії (${response.status})`);
+                    }
+                    return;
+                }
+
+                const data = await response.json();
+                
+                // Зберігаємо задачі для пошуку
+                if (reset) {
+                    allHistoryTasks = data.tasks;
+                } else {
+                    allHistoryTasks = [...allHistoryTasks, ...data.tasks];
+                }
+                
+                displayHistory(data, reset);
+            } catch (error) {
+                console.error('History load error:', error);
+                showError('Помилка завантаження історії: ' + error.message);
+            }
+        }
+
+        function displayHistory(data, reset) {
+            const historyList = document.getElementById('historyList');
+            const loadMoreBtn = document.getElementById('loadMoreBtn');
+
+            if (reset) {
+                historyList.innerHTML = '';
+            }
+
+            if (data.tasks.length === 0 && reset) {
+                historyList.innerHTML = '<p style="text-align: center; color: #666;">Історія транскрипцій порожня</p>';
+                loadMoreBtn.style.display = 'none';
+                return;
+            }
+
+            data.tasks.forEach(task => {
+                const taskDiv = document.createElement('div');
+                taskDiv.className = `history-item ${task.status}`;
+
+                const statusText = {
+                    'completed': 'Завершено',
+                    'failed': 'Помилка',
+                    'processing': 'В обробці',
+                    'queued': 'В черзі'
+                }[task.status] || task.status;
+
+                const detailsId = `history-details-${task.task_id}`;
+                const diarizationText = task.use_diarization ? 'Так' : 'Ні';
+                const startedAtLine = task.started_at ? `<div>▶️ Почато: ${task.started_at}</div>` : '';
+                const completedAtLine = task.completed_at ? `<div>✅ Завершено: ${task.completed_at}</div>` : '';
+
+                let actionButtons = '';
+                if (task.status === 'completed' && task.result) {
+                    actionButtons = `
+                        <div class="history-actions">
+                            <button class="btn btn-secondary" onclick="viewTaskResult('${task.task_id}')">
+                                👁️ Переглянути результат
+                            </button>
+                            <button class="copy-btn" data-task-copy="${task.task_id}" onclick="copyTaskResult('${task.task_id}', event)">
+                                📋 Копіювати текст
+                            </button>
+                        </div>
+                    `;
+                } else if (task.status === 'processing' || task.status === 'queued') {
+                    actionButtons = `
+                        <div class="history-actions">
+                            <button class="btn btn-secondary" onclick="checkTaskStatus('${task.task_id}')">
+                                🔄 Перевірити статус
+                            </button>
+                        </div>
+                    `;
+                }
+
+                taskDiv.innerHTML = `
+                    <div class="history-header">
+                        <strong>${task.file_name || 'Без назви'}</strong>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <span class="history-status ${task.status}">${statusText}</span>
+                            <button class="history-details-btn" data-details-toggle="${detailsId}" onclick="toggleHistoryDetails('${detailsId}')">
+                                ℹ️ Деталі
+                            </button>
+                        </div>
+                    </div>
+                    <div class="history-details" id="${detailsId}">
+                        <div>📅 Створено: ${task.created_at || '—'}</div>
+                        ${startedAtLine}
+                        ${completedAtLine}
+                        <div>🔧 Модель: ${task.model_size}</div>
+                        <div>🎯 Діаризація: ${diarizationText}</div>
+                        ${task.error ? `<div style="color: #f44336;">❌ Помилка: ${task.error}</div>` : ''}
+                        ${actionButtons}
+                    </div>
+                `;
+
+                historyList.appendChild(taskDiv);
+            });
+
+            // Показуємо кнопку "Завантажити більше" якщо є ще задачі
+            if (data.has_more) {
+                loadMoreBtn.style.display = 'block';
+            } else {
+                loadMoreBtn.style.display = 'none';
+            }
+        }
+
+        function toggleHistoryDetails(detailsId) {
+            const detailsBlock = document.getElementById(detailsId);
+            if (!detailsBlock) return;
+            const isActive = detailsBlock.classList.contains('active');
+            detailsBlock.classList.toggle('active');
+            const toggleButton = document.querySelector(`[data-details-toggle="${detailsId}"]`);
+            if (toggleButton) {
+                toggleButton.textContent = isActive ? 'ℹ️ Деталі' : '🔽 Приховати';
+                toggleButton.setAttribute('aria-expanded', (!isActive).toString());
+            }
+        }
+
+        function loadMore() {
+            currentOffset += historyLimit;
+            loadHistory(false);
+        }
+
+        async function viewTaskResult(taskId) {
+            try {
+                const response = await fetch(`/task/${taskId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Помилка завантаження результату');
+                }
+
+                const task = await response.json();
+                
+                if (task.result) {
+                    transcriptionResult = task.result;
+                    displayResult(task.result);
+                    
+                    // Закриваємо модальне вікно
+                    closeHistoryModal();
+                    
+                    // Показуємо секцію результатів
+                    const resultSection = document.getElementById('resultSection');
+                    if (resultSection) resultSection.style.display = 'block';
+                    
+                    // Прокручуємо до результатів
+                    resultSection.scrollIntoView({ behavior: 'smooth' });
+                }
+            } catch (error) {
+                showError('Помилка завантаження результату: ' + error.message);
+            }
+        }
+
+        async function copyTaskResult(taskId, event) {
+            try {
+                const response = await fetch(`/task/${taskId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Помилка завантаження результату');
+                }
+
+                const task = await response.json();
+                
+                if (task.result && task.result.text) {
+                    transcriptionResult = task.result;
+                    await safeWriteToClipboard(task.result.text);
+                    const trigger = event?.currentTarget || document.querySelector(`[data-task-copy="${taskId}"]`);
+                    showCopyNotice(trigger);
+                }
+            } catch (error) {
+                showError('Помилка копіювання: ' + error.message);
+            }
+        }
+
+        async function checkTaskStatus(taskId) {
+            try {
+                const response = await fetch(`/task/${taskId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Помилка перевірки статусу');
+                }
+
+                const task = await response.json();
+                
+                const statusText = {
+                    'completed': 'Завершено ✅',
+                    'failed': 'Помилка ❌',
+                    'processing': 'В обробці ⏳',
+                    'queued': 'В черзі 📋'
+                }[task.status] || task.status;
+                
+                showSuccess(`Статус задачі: ${statusText}`);
+                
+                // Оновлюємо історію
+                await loadHistory();
+            } catch (error) {
+                showError('Помилка перевірки статусу: ' + error.message);
+            }
         }
 
         // Налаштування drag & drop
@@ -1087,6 +1746,36 @@
             resultSection.scrollIntoView({ behavior: 'smooth' });
         }
 
+        // Відобразити результат (для історії)
+        function displayResult(result) {
+            transcriptionResult = result;
+            const resultText = document.getElementById('resultText');
+            const segmentsContainer = document.getElementById('segmentsContainer');
+
+            // Показуємо текст
+            resultText.textContent = result.text || 'Немає тексту';
+
+            // Показуємо сегменти
+            if (result.segments && result.segments.length > 0) {
+                segmentsContainer.innerHTML = '<h4>📊 Сегменти</h4>';
+                
+                result.segments.forEach((segment, index) => {
+                    const segmentDiv = document.createElement('div');
+                    segmentDiv.className = 'segment';
+                    
+                    segmentDiv.innerHTML = `
+                        <div class="segment-header">Сегмент ${index + 1}</div>
+                        <div class="segment-time">${formatTime(segment.start)} - ${formatTime(segment.end)}</div>
+                        <div>${segment.text}</div>
+                    `;
+                    
+                    segmentsContainer.appendChild(segmentDiv);
+                });
+            } else {
+                segmentsContainer.innerHTML = '';
+            }
+        }
+
         // Форматування часу
         function formatTime(seconds) {
             const minutes = Math.floor(seconds / 60);
@@ -1094,15 +1783,63 @@
             return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
         }
 
+        async function safeWriteToClipboard(text) {
+            if (!text) {
+                throw new Error('Немає тексту');
+            }
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return;
+            }
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const successful = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            if (!successful) {
+                throw new Error('Буфер обміну недоступний');
+            }
+        }
+
+        function showCopyNotice(targetButton, message = 'Скопійовано!') {
+            if (!targetButton) return;
+            if (!targetButton._copyNotice) {
+                const notice = document.createElement('span');
+                notice.className = 'copy-notice';
+                document.body.appendChild(notice);
+                targetButton._copyNotice = notice;
+            }
+            const notice = targetButton._copyNotice;
+            const rect = targetButton.getBoundingClientRect();
+            notice.textContent = message;
+            notice.style.left = `${rect.left + rect.width / 2}px`;
+            notice.style.top = `${rect.top - 6}px`;
+            notice.classList.add('visible');
+            clearTimeout(notice._hideTimeout);
+            notice._hideTimeout = setTimeout(() => {
+                notice.classList.remove('visible');
+            }, 1800);
+        }
+
         // Копіювати в буфер обміну
-        async function copyToClipboard() {
-            if (!transcriptionResult) return;
-            
+        async function copyToClipboard(event) {
+            const resultElement = document.getElementById('resultText');
+            const textSource = (transcriptionResult && transcriptionResult.text) || resultElement?.textContent;
+            const textToCopy = textSource ? textSource.trim() : '';
+            if (!textToCopy) {
+                showError('Немає тексту для копіювання');
+                return;
+            }
             try {
-                await navigator.clipboard.writeText(transcriptionResult.text);
-                showSuccess('Текст скопійовано в буфер обміну!');
+                await safeWriteToClipboard(textToCopy);
+                const trigger = event?.currentTarget || document.querySelector('[data-copy-target="result"]');
+                showCopyNotice(trigger);
             } catch (error) {
-                showError('Не вдалося скопіювати текст');
+                showError('Не вдалося скопіювати текст: ' + (error.message || '')); 
             }
         }
 

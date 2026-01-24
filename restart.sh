@@ -14,7 +14,10 @@ else
   echo "ℹ️ Процес не знайдено, запускаємо новий"
 fi
 
-echo "🚀 Запуск $APP_NAME..."
+echo "�️ Ініціалізація бази даних..."
+python3 -m app.db.init_db 2>&1 | tee -a $LOG_FILE
+
+echo "�🚀 Запуск $APP_NAME..."
 nohup python3 $APP_NAME > $LOG_FILE 2>&1 &
 
 NEW_PID=$!
