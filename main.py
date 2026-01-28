@@ -59,7 +59,7 @@ worker_tasks = []  # Зберігаємо посилання на воркер-�
 class TranscriptionRequest(BaseModel):
     url: Optional[HttpUrl] = None
     language: str = "uk"  # Українська мова за замовчуванням
-    model_size: str = "small"  # Розмір моделі Whisper
+    model_size: str = "large"  # Розмір моделі Whisper
     enhance_audio: bool = True  # Попередня обробка аудіо
     use_diarization: bool = False  # Використовувати діаризацію
 
@@ -475,7 +475,7 @@ async def transcribe_audio_file(
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
     language: str = Form("uk"),
-    model_size: str = Form("small"),
+    model_size: str = Form("large"),
     use_diarization: bool = Form(False),
     api_key: str = Depends(verify_api_key)
 ):
@@ -501,6 +501,19 @@ async def transcribe_audio_file(
     # Валідація розміру моделі
     if model_size not in ["tiny", "base", "small", "medium", "large", "auto"]:
         raise HTTPException(status_code=400, detail="Model size must be one of: tiny, base, small, medium, large, auto")
+    
+    # Перевірка доступності пам'яті для запитаної моделі
+    if model_size != "auto":
+        try:
+            from models.model_manager import model_manager
+            can_load, reason = model_manager.can_load_model(model_size)
+            if not can_load:
+                raise HTTPException(
+                    status_code=507,
+                    detail=f"Insufficient memory for model '{model_size}': {reason}. Try a smaller model or wait for current tasks to complete."
+                )
+        except ImportError:
+            pass  # ModelManager недоступний, продовжуємо без перевірки
     
     # Генеруємо унікальний ID задачі
     task_id = str(uuid.uuid4())
@@ -594,7 +607,7 @@ async def transcribe_with_diarization(
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
     language: str = Form("uk"),
-    model_size: str = Form("small"),
+    model_size: str = Form("large"),
     api_key: str = Depends(verify_api_key)
 ):
     """
@@ -987,6 +1000,147 @@ async def get_key_details(
         logger.error(f"Помилка отримання деталей ключа: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch key details: {str(e)}")
 
+
+# ============== MODEL MANAGEMENT ENDPOINTS ==============
+
+@app.get("/admin/model-status")
+async def get_model_status(master_token: str = Depends(verify_master_token)):
+    """
+    Отримує статус завантаженої моделі та пам'яті.
+    
+    Повертає інформацію про:
+    - Поточну завантажену модель
+    - Доступну та загальну пам'ять
+    - Вимоги до пам'яті для різних моделей
+    """
+    try:
+        from models.model_manager import model_manager
+        
+        status = model_manager.get_status()
+        
+        # Додаємо інформацію про чергу та активні задачі
+        queue_size = task_queue.qsize() if task_queue else 0
+        active_tasks = len([t for t in tasks.values() if getattr(t, 'status', None) == "processing"])
+        return {
+            **status,
+            "queue_size": queue_size,
+            "queue_max_size": 25,
+            "active_tasks": active_tasks,
+        }
+    except ImportError:
+        # Fallback якщо model_manager недоступний
+        return {
+            "model_loaded": transcription_service.whisper_model is not None if transcription_service else False,
+            "current_model_size": transcription_service.whisper_model.model_size if transcription_service and transcription_service.whisper_model else None,
+            "error": "ModelManager not available"
+        }
+    except Exception as e:
+        logger.error(f"Помилка отримання статусу моделі: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get model status: {str(e)}")
+
+
+@app.post("/admin/unload-model")
+async def unload_model(master_token: str = Depends(verify_master_token)):
+    """
+    Вивантажує поточну модель з пам'яті.
+    
+    Використовуйте для звільнення RAM без перезапуску сервера.
+    Наступний запит на транскрипцію автоматично завантажить модель.
+    """
+    try:
+        from models.model_manager import model_manager
+        
+        if model_manager.is_loading:
+            raise HTTPException(status_code=409, detail="Model is currently loading, cannot unload")
+        
+        # Перевіряємо чи є активні задачі
+        queue_size = task_queue.qsize() if task_queue else 0
+        if queue_size > 0:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Cannot unload model: {queue_size} tasks in queue. Wait for completion or cancel tasks."
+            )
+        
+        old_size = model_manager.current_model_size
+        success = model_manager.unload_model()
+        
+        if success:
+            # Оновлюємо посилання в transcription_service
+            if transcription_service and transcription_service.whisper_model:
+                transcription_service.whisper_model.model = None
+            
+            return {
+                "message": f"Model {old_size} unloaded successfully",
+                "available_memory_gb": round(model_manager.get_available_memory_gb(), 2)
+            }
+        else:
+            return {"message": "No model was loaded"}
+            
+    except ImportError:
+        raise HTTPException(status_code=501, detail="ModelManager not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Помилка вивантаження моделі: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
+
+
+@app.post("/admin/switch-model/{model_size}")
+async def switch_model(
+    model_size: str,
+    master_token: str = Depends(verify_master_token)
+):
+    """
+    Перемикає на іншу модель, вивантажуючи поточну.
+    
+    Параметри:
+    - model_size: tiny, base, small, medium, large
+    
+    Перевіряє доступну пам'ять перед завантаженням.
+    """
+    if model_size not in ["tiny", "base", "small", "medium", "large"]:
+        raise HTTPException(status_code=400, detail="Invalid model size. Use: tiny, base, small, medium, large")
+    
+    try:
+        from models.model_manager import model_manager
+        
+        if model_manager.is_loading:
+            raise HTTPException(status_code=409, detail="Another model is currently loading")
+        
+        # Перевіряємо чи можна завантажити
+        can_load, reason = model_manager.can_load_model(model_size)
+        if not can_load:
+            raise HTTPException(status_code=507, detail=f"Insufficient memory: {reason}")
+        
+        old_size = model_manager.current_model_size
+        
+        # Завантажуємо нову модель (стара буде автоматично вивантажена)
+        device = "cuda" if transcription_service and hasattr(transcription_service, 'whisper_model') and transcription_service.whisper_model.device == "cuda" else "cpu"
+        
+        model = model_manager.load_model(model_size, device)
+        
+        # Оновлюємо посилання в transcription_service
+        if transcription_service and transcription_service.whisper_model:
+            transcription_service.whisper_model.model = model
+            transcription_service.whisper_model.model_size = model_size
+        
+        return {
+            "message": f"Switched from {old_size or 'none'} to {model_size}",
+            "current_model": model_size,
+            "available_memory_gb": round(model_manager.get_available_memory_gb(), 2)
+        }
+        
+    except ImportError:
+        raise HTTPException(status_code=501, detail="ModelManager not available")
+    except MemoryError as e:
+        raise HTTPException(status_code=507, detail=f"Insufficient memory: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Помилка перемикання моделі: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to switch model: {str(e)}")
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(request: Request):
     """Адмін панель для управління API ключами"""
@@ -1046,23 +1200,41 @@ async def admin_panel(request: Request):
             body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
             .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
             h1 {{ color: #1976d2; border-bottom: 2px solid #1976d2; padding-bottom: 10px; }}
-            .stats {{ display: flex; gap: 20px; margin: 20px 0; }}
-            .stat-card {{ background: #e3f2fd; padding: 15px; border-radius: 8px; text-align: center; flex: 1; }}
+            .stats {{ display: flex; gap: 20px; margin: 20px 0; flex-wrap: wrap; }}
+            .stat-card {{ background: #e3f2fd; padding: 15px; border-radius: 8px; text-align: center; flex: 1; min-width: 120px; }}
             .stat-number {{ font-size: 24px; font-weight: bold; color: #1976d2; }}
             .form-section {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }}
+            .model-section {{ background: #fff3e0; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #ffcc80; }}
+            .model-status {{ display: flex; gap: 15px; align-items: center; flex-wrap: wrap; margin: 10px 0; }}
+            .model-info {{ background: white; padding: 10px 15px; border-radius: 6px; border: 1px solid #ddd; }}
+            .model-info strong {{ color: #e65100; }}
+            .memory-bar {{ width: 200px; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; }}
+            .memory-fill {{ height: 100%; background: linear-gradient(90deg, #4caf50, #ff9800, #f44336); transition: width 0.3s; }}
             table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
             th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
             th {{ background: #f8f9fa; font-weight: bold; }}
             .active {{ background: #e8f5e8; }}
             .inactive {{ background: #ffe8e8; }}
             input[type="text"] {{ width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }}
-            button {{ padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }}
+            select {{ padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }}
+            button {{ padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; margin: 2px; }}
             .generate-btn {{ background: #4caf50; color: white; }}
             .delete-btn {{ background: #f44336; color: white; }}
+            .unload-btn {{ background: #ff9800; color: white; }}
+            .switch-btn {{ background: #2196f3; color: white; }}
+            .refresh-btn {{ background: #9e9e9e; color: white; }}
             .generate-btn:hover {{ background: #45a049; }}
             .delete-btn:hover {{ background: #da190b; }}
+            .unload-btn:hover {{ background: #f57c00; }}
+            .switch-btn:hover {{ background: #1976d2; }}
+            .refresh-btn:hover {{ background: #757575; }}
+            button:disabled {{ background: #ccc; cursor: not-allowed; }}
             .new-key {{ background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 10px 0; display: none; }}
             .new-key code {{ background: #f0f0f0; padding: 5px; border-radius: 3px; }}
+            .loading {{ opacity: 0.6; pointer-events: none; }}
+            .status-badge {{ padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
+            .status-loaded {{ background: #c8e6c9; color: #2e7d32; }}
+            .status-unloaded {{ background: #ffcdd2; color: #c62828; }}
         </style>
     </head>
     <body>
@@ -1081,6 +1253,38 @@ async def admin_panel(request: Request):
                 <div class="stat-card">
                     <div class="stat-number">{stats["inactive_keys"]}</div>
                     <div>Inactive</div>
+                </div>
+            </div>
+            
+            <!-- Model Management Section -->
+            <div class="model-section">
+                <h3>🧠 Model Management</h3>
+                <div class="model-status" id="modelStatus">
+                    <div class="model-info">
+                        <strong>Model:</strong> <span id="currentModel">Loading...</span>
+                        <span id="modelBadge" class="status-badge status-unloaded">—</span>
+                    </div>
+                    <div class="model-info">
+                        <strong>RAM:</strong> <span id="memoryInfo">—</span>
+                        <div class="memory-bar">
+                            <div class="memory-fill" id="memoryBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="model-info">
+                        <strong>Queue:</strong> <span id="queueInfo">—</span>
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <button class="refresh-btn" onclick="refreshModelStatus()">🔄 Refresh</button>
+                    <button class="unload-btn" id="unloadBtn" onclick="unloadModel()">📤 Unload Model</button>
+                    <select id="modelSelect">
+                        <option value="tiny">tiny (~0.5GB)</option>
+                        <option value="base">base (~0.8GB)</option>
+                        <option value="small">small (~1.2GB)</option>
+                        <option value="medium">medium (~2.5GB)</option>
+                        <option value="large">large (~4.5GB)</option>
+                    </select>
+                    <button class="switch-btn" onclick="switchModel()">🔄 Switch Model</button>
                 </div>
             </div>
             
@@ -1110,6 +1314,118 @@ async def admin_panel(request: Request):
         </div>
         
         <script>
+            const masterToken = '{master_token}';
+            
+            // Load model status on page load
+            document.addEventListener('DOMContentLoaded', refreshModelStatus);
+            
+            async function refreshModelStatus() {{
+                try {{
+                    const response = await fetch('/admin/model-status', {{
+                        headers: {{ 'Authorization': 'Bearer ' + masterToken }}
+                    }});
+                    
+                    if (response.ok) {{
+                        const data = await response.json();
+                        
+                        // Update model info
+                        const modelSpan = document.getElementById('currentModel');
+                        const modelBadge = document.getElementById('modelBadge');
+                        const unloadBtn = document.getElementById('unloadBtn');
+                        
+                        if (data.model_loaded) {{
+                            modelSpan.textContent = data.current_model_size || 'unknown';
+                            modelBadge.textContent = 'LOADED';
+                            modelBadge.className = 'status-badge status-loaded';
+                            unloadBtn.disabled = false;
+                        }} else {{
+                            modelSpan.textContent = 'None';
+                            modelBadge.textContent = 'UNLOADED';
+                            modelBadge.className = 'status-badge status-unloaded';
+                            unloadBtn.disabled = true;
+                        }}
+                        
+                        // Update memory info
+                        const memInfo = document.getElementById('memoryInfo');
+                        const memBar = document.getElementById('memoryBar');
+                        const usedMem = data.total_memory_gb - data.available_memory_gb;
+                        const memPercent = (usedMem / data.total_memory_gb * 100).toFixed(0);
+                        memInfo.textContent = `${{data.available_memory_gb.toFixed(1)}}GB free / ${{data.total_memory_gb.toFixed(1)}}GB`;
+                        memBar.style.width = memPercent + '%';
+                        
+                        // Update queue info
+                        document.getElementById('queueInfo').textContent = 
+                            `${{data.queue_size || 0}} / ${{data.queue_max_size || 25}}`;
+                    }}
+                }} catch (error) {{
+                    console.error('Failed to fetch model status:', error);
+                }}
+            }}
+            
+            async function unloadModel() {{
+                if (!confirm('Unload the current model? New transcription requests will reload it automatically.')) {{
+                    return;
+                }}
+                
+                const btn = document.getElementById('unloadBtn');
+                btn.disabled = true;
+                btn.textContent = '⏳ Unloading...';
+                
+                try {{
+                    const response = await fetch('/admin/unload-model', {{
+                        method: 'POST',
+                        headers: {{ 'Authorization': 'Bearer ' + masterToken }}
+                    }});
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {{
+                        alert('✅ ' + data.message);
+                        refreshModelStatus();
+                    }} else {{
+                        alert('❌ ' + (data.detail || 'Failed to unload model'));
+                    }}
+                }} catch (error) {{
+                    alert('Error: ' + error.message);
+                }} finally {{
+                    btn.textContent = '📤 Unload Model';
+                    refreshModelStatus();
+                }}
+            }}
+            
+            async function switchModel() {{
+                const modelSize = document.getElementById('modelSelect').value;
+                
+                if (!confirm(`Switch to ${{modelSize}} model? This will unload the current model.`)) {{
+                    return;
+                }}
+                
+                const btn = document.querySelector('.switch-btn');
+                btn.disabled = true;
+                btn.textContent = '⏳ Loading...';
+                
+                try {{
+                    const response = await fetch('/admin/switch-model/' + modelSize, {{
+                        method: 'POST',
+                        headers: {{ 'Authorization': 'Bearer ' + masterToken }}
+                    }});
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {{
+                        alert('✅ ' + data.message);
+                    }} else {{
+                        alert('❌ ' + (data.detail || 'Failed to switch model'));
+                    }}
+                }} catch (error) {{
+                    alert('Error: ' + error.message);
+                }} finally {{
+                    btn.disabled = false;
+                    btn.textContent = '🔄 Switch Model';
+                    refreshModelStatus();
+                }}
+            }}
+            
             async function generateKey() {{
                 const clientName = document.getElementById('clientName').value;
                 if (!clientName) {{
@@ -1122,7 +1438,7 @@ async def admin_panel(request: Request):
                         method: 'POST',
                         headers: {{
                             'Content-Type': 'application/json',
-                            'Authorization': 'Bearer {master_token}'
+                            'Authorization': 'Bearer ' + masterToken
                         }},
                         body: JSON.stringify({{ client_name: clientName }})
                     }});
@@ -1158,7 +1474,7 @@ async def admin_panel(request: Request):
                         method: 'POST',
                         headers: {{
                             'Content-Type': 'application/json',
-                            'Authorization': 'Bearer {master_token}'
+                            'Authorization': 'Bearer ' + masterToken
                         }},
                         body: JSON.stringify({{ api_key: apiKey }})
                     }});
@@ -1173,6 +1489,9 @@ async def admin_panel(request: Request):
                     alert('Error: ' + error.message);
                 }}
             }}
+            
+            // Auto-refresh model status every 30 seconds
+            setInterval(refreshModelStatus, 30000);
         </script>
     </body>
     </html>

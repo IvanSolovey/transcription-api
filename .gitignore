@@ -63,7 +63,13 @@ models/faster-whisper-*/
 models/spkrec-*/
 pretrained_models/
 
-models/
+models/__pycache__
+.locks
+models/models--Systran--faster-whisper-large-v3
+models/models--Systran--faster-whisper-medium
+models/models--Systran--faster-whisper-small
+models/models--Systran--faster-whisper-base
+models/models--Systran--faster-whisper-tiny
 
 # Environment variables
 .env

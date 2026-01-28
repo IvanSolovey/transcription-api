@@ -511,6 +511,7 @@
         </div>
 
         <div class="content">
+            <!-- 🧠 Model Management буде перенесено нижче -->
             <!-- Авторизація -->
             <div class="auth-section">
                 <h3>🔐 Авторизація</h3>
@@ -567,6 +568,7 @@
             </div>
 
             <!-- Список ключів -->
+                    
             <div class="form-section" id="keysSection" style="display: none;">
                 <h3>📋 Список API ключів</h3>
                 <div class="table-container">
@@ -590,6 +592,37 @@
                     <p>Завантаження списку ключів...</p>
                 </div>
             </div>
+                <!-- 🧠 Model Management (під списком ключів, у стилі .form-section) -->
+                        <div class="form-section" id="modelSection" style="display: none; margin-top: 30px;">
+                            <h3 style="margin-bottom: 18px;">🧠 Model Management</h3>
+                            <div class="model-status" id="modelStatus" style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap; margin: 10px 0;">
+                                <div class="model-info">
+                                    <strong>Модель:</strong> <span id="currentModel">Завантаження...</span>
+                                    <span id="modelBadge" class="status-badge status-unloaded">—</span>
+                                </div>
+                                <div class="model-info">
+                                    <strong>RAM:</strong> <span id="memoryInfo">—</span>
+                                    <div class="memory-bar">
+                                        <div class="memory-fill" id="memoryBar" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="model-info">
+                                    <strong>Черга:</strong> <span id="queueInfo">—</span>
+                                </div>
+                            </div>
+                            <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                                <button class="btn btn-secondary" onclick="refreshModelStatus()">🔄 Refresh</button>
+                                <button class="btn btn-warning" id="unloadBtn" onclick="unloadModel()">📤 Unload Model</button>
+                                <select id="modelSelect" class="btn" style="padding: 10px 16px; min-width: 120px;">
+                                    <option value="tiny">tiny (~0.5GB)</option>
+                                    <option value="base">base (~0.8GB)</option>
+                                    <option value="small">small (~1.2GB)</option>
+                                    <option value="medium">medium (~2.5GB)</option>
+                                    <option value="large">large (~4.5GB)</option>
+                                </select>
+                                <button class="btn btn-info" onclick="switchModel()">🔄 Змінити модель</button>
+                            </div>
+                        </div>
 
             <!-- Повідомлення -->
             <div class="error" id="errorMessage"></div>
@@ -618,8 +651,120 @@
             </div>
         </div>
     </div>
-
     <script>
+                    // Сумісність: fetchModelStatus як синонім для refreshModelStatus
+                    function fetchModelStatus() { return refreshModelStatus(); }
+                // --- Model Management ---
+        // --- Model Management (1:1 як у динамічній адмінці) ---
+        async function refreshModelStatus() {
+            try {
+                const response = await fetch('/admin/model-status', {
+                    headers: { 'Authorization': 'Bearer ' + masterToken }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    // Model
+                    const modelSpan = document.getElementById('currentModel');
+                    const modelBadge = document.getElementById('modelBadge');
+                    const unloadBtn = document.getElementById('unloadBtn');
+                    if (data.model_loaded) {
+                        modelSpan.textContent = data.current_model_size || 'unknown';
+                        modelBadge.textContent = 'LOADED';
+                        modelBadge.className = 'status-badge status-loaded';
+                        unloadBtn.disabled = false;
+                    } else {
+                        modelSpan.textContent = 'None';
+                        modelBadge.textContent = 'UNLOADED';
+                        modelBadge.className = 'status-badge status-unloaded';
+                        unloadBtn.disabled = true;
+                    }
+                    // RAM
+                    const memInfo = document.getElementById('memoryInfo');
+                    const memBar = document.getElementById('memoryBar');
+                    const usedMem = data.total_memory_gb - data.available_memory_gb;
+                    const memPercent = (usedMem / data.total_memory_gb * 100).toFixed(0);
+                    memInfo.textContent = `${data.available_memory_gb.toFixed(1)}GB free / ${data.total_memory_gb.toFixed(1)}GB`;
+                    memBar.style.width = memPercent + '%';
+                    // Queue
+                    document.getElementById('queueInfo').textContent = `${data.queue_size || 0} / ${data.queue_max_size || 25}`;
+                }
+            } catch (error) {
+                console.error('Failed to fetch model status:', error);
+            }
+        }
+
+                async function switchModel() {
+                    const sel = document.getElementById('modelSelect');
+                    const size = sel.value;
+                    document.getElementById('modelActionMsg').innerHTML = '⏳ Перемикання моделі...';
+                    try {
+                        console.log('POST /admin/switch-model/' + size);
+                        const resp = await fetch(`/admin/switch-model/${size}`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${masterToken}` }
+                        });
+                        console.log('Response:', resp);
+                        const data = await resp.json();
+                        console.log('Data:', data);
+                        if (resp.ok) {
+                            document.getElementById('modelActionMsg').innerHTML = '✅ ' + (data.detail || data.message || 'Модель перемкнено');
+                        } else {
+                            document.getElementById('modelActionMsg').innerHTML = '❌ ' + (data.detail || data.message || 'Помилка перемикання');
+                        }
+                        fetchModelStatus();
+                    } catch (e) {
+                        console.error('Switch model error:', e);
+                        document.getElementById('modelActionMsg').innerHTML = '❌ Помилка перемикання моделі';
+                    }
+                }
+
+                async function unloadModel() {
+                    document.getElementById('modelActionMsg').innerHTML = '⏳ Вивантаження моделі...';
+                    try {
+                        console.log('POST /admin/unload-model');
+                        const resp = await fetch('/admin/unload-model', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${masterToken}` }
+                        });
+                        console.log('Response:', resp);
+                        const data = await resp.json();
+                        console.log('Data:', data);
+                        if (resp.ok) {
+                            document.getElementById('modelActionMsg').innerHTML = '✅ ' + (data.detail || data.message || 'Модель вивантажено');
+                        } else {
+                            document.getElementById('modelActionMsg').innerHTML = '❌ ' + (data.detail || data.message || 'Помилка вивантаження');
+                        }
+                        fetchModelStatus();
+                    } catch (e) {
+                        console.error('Unload model error:', e);
+                        document.getElementById('modelActionMsg').innerHTML = '❌ Помилка вивантаження моделі';
+                    }
+                }
+
+                // Показати всі секції після авторизації (універсальна функція)
+                function showMainContent() {
+                    const authSection = document.getElementById('authSection');
+                    const statsSection = document.getElementById('statsSection');
+                    const createSection = document.getElementById('createSection');
+                    const keysSection = document.getElementById('keysSection');
+                    const modelSection = document.getElementById('modelSection');
+                    if (authSection) authSection.style.display = 'none';
+                    if (statsSection) statsSection.style.display = 'grid';
+                    if (createSection) createSection.style.display = 'block';
+                    if (keysSection) keysSection.style.display = 'block';
+                    if (modelSection) {
+                        modelSection.style.display = 'block';
+                        fetchModelStatus();
+                    }
+                    loadKeys();
+                }
+
+                // Оновлювати статус моделі кожні 30 сек
+                setInterval(() => {
+                    if (masterToken && document.getElementById('modelSection').style.display !== 'none') {
+                        fetchModelStatus();
+                    }
+                }, 30000);
         let masterToken = '';
         let apiKeys = [];
         let currentEditingKey = '';
@@ -674,20 +819,7 @@
             }
         }
 
-        // Показати основний контент
-        function showMainContent() {
-            const authSection = document.getElementById('authSection');
-            const statsSection = document.getElementById('statsSection');
-            const createSection = document.getElementById('createSection');
-            const keysSection = document.getElementById('keysSection');
-            
-            if (authSection) authSection.style.display = 'none';
-            if (statsSection) statsSection.style.display = 'grid';
-            if (createSection) createSection.style.display = 'block';
-            if (keysSection) keysSection.style.display = 'block';
-            
-            loadKeys();
-        }
+        // ...видалено дубль showMainContent()...
 
         // Оновити статистику
         function updateStats(stats) {

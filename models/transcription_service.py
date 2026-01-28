@@ -409,6 +409,36 @@ class LocalTranscriptionService:
             logger.error(f"Помилка валідації файлу: {e}")
             raise
 
+    def _safe_switch_model(self, target_model_size: str) -> bool:
+        """
+        Безпечно перемикає модель з перевіркою пам'яті.
+        
+        Returns:
+            True якщо модель успішно змінена або вже потрібного розміру
+        """
+        if target_model_size == "auto":
+            return True  # auto = використовуємо поточну
+        
+        if target_model_size == self.whisper_model.model_size:
+            return True  # Вже потрібна модель
+        
+        # Спробуємо безпечно перемкнути через новий метод
+        if hasattr(self.whisper_model, 'switch_model'):
+            try:
+                if self.whisper_model.switch_model(target_model_size):
+                    logger.info(f"✅ Модель безпечно змінена на {target_model_size}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Не вдалося змінити модель на {target_model_size}, використовується {self.whisper_model.model_size}")
+                    return False
+            except MemoryError as e:
+                logger.error(f"❌ Недостатньо пам'яті для {target_model_size}: {e}")
+                raise  # Пробрасуємо помилку пам'яті наверх
+        else:
+            # Fallback на старий метод (небезпечний)
+            logger.warning("⚠️ Використовується старий метод зміни моделі")
+            return self.load_models(target_model_size)
+
     def transcribe_simple(self, audio_path: str, language: str = "uk", model_size: str = "auto", use_parallel: bool = False, force_no_chunks: bool = True) -> Dict[str, Any]:
         """Швидка транскрипція з опціональним паралельним обробленням"""
         if not self.models_loaded:
@@ -422,11 +452,10 @@ class LocalTranscriptionService:
             logger.warning("⚠️ Високий тиск на пам'ять, примусове очищення")
             memory_monitor.force_garbage_collection()
         
-        # Перевіряємо чи потрібно змінити модель
+        # Безпечна зміна моделі з перевіркою пам'яті
         if model_size != "auto" and model_size != self.whisper_model.model_size:
-            logger.info(f"🔄 Зміна моделі з {self.whisper_model.model_size} на {model_size}")
-            if not self.load_models(model_size):
-                logger.warning(f"Не вдалося завантажити модель {model_size}, використовується поточна")
+            logger.info(f"🔄 Запит зміни моделі з {self.whisper_model.model_size} на {model_size}")
+            self._safe_switch_model(model_size)
         
         start_time = time.time()
         
@@ -507,11 +536,10 @@ class LocalTranscriptionService:
         if not self.models_loaded:
             raise RuntimeError("Моделі не завантажені")
         
-        # Перевіряємо чи потрібно змінити модель
+        # Безпечна зміна моделі з перевіркою пам'яті
         if model_size != "auto" and model_size != self.whisper_model.model_size:
-            logger.info(f"🔄 Зміна моделі з {self.whisper_model.model_size} на {model_size}")
-            if not self.load_models(model_size):
-                logger.warning(f"Не вдалося завантажити модель {model_size}, використовується поточна")
+            logger.info(f"🔄 Запит зміни моделі з {self.whisper_model.model_size} на {model_size}")
+            self._safe_switch_model(model_size)
         
         # Lazy loading діаризації - ініціалізуємо тільки при потребі
         if not ENABLE_DIARIZATION:

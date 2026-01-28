@@ -41,12 +41,13 @@ class LocalWhisperModel:
         self.device = device
         self.model = None
         self.transcription_service = transcription_service  # Посилання на основний сервіс для кешування
+        self._use_manager = MODEL_MANAGER_AVAILABLE
         
     def load_model(self) -> bool:
         """Завантажує faster-whisper модель через менеджер моделей"""
         try:
-            if MODEL_MANAGER_AVAILABLE:
-                # Використовуємо менеджер моделей для lazy loading
+            if self._use_manager:
+                # Використовуємо менеджер моделей - єдиний інстанс в пам'яті
                 self.model = model_manager.load_model(self.model_size, self.device)
                 if self.model:
                     logger.info(f"✅ Модель {self.model_size} завантажена через менеджер")
@@ -58,9 +59,55 @@ class LocalWhisperModel:
                 # Fallback на старий метод
                 return self._load_model_fallback()
                 
+        except MemoryError as e:
+            # Критична помилка пам'яті - не намагаємось fallback
+            logger.error(f"❌ Недостатньо пам'яті для моделі {self.model_size}: {e}")
+            raise
         except Exception as e:
             logger.error(f"Помилка завантаження моделі через менеджер: {e}")
             return self._load_model_fallback()
+    
+    def switch_model(self, new_model_size: str) -> bool:
+        """
+        Безпечно перемикає на іншу модель, вивантажуючи поточну.
+        
+        Returns:
+            True якщо перемикання успішне
+        """
+        if not self._use_manager:
+            logger.warning("ModelManager недоступний, перемикання неможливе")
+            return False
+        
+        try:
+            # Перевіряємо чи можна завантажити нову модель
+            can_load, reason = model_manager.can_load_model(new_model_size)
+            if not can_load:
+                logger.error(f"❌ Неможливо перемкнути на {new_model_size}: {reason}")
+                return False
+            
+            # Завантажуємо нову модель (стара буде автоматично вивантажена)
+            self.model = model_manager.load_model(new_model_size, self.device)
+            self.model_size = new_model_size
+            
+            logger.info(f"✅ Успішно перемкнуто на модель {new_model_size}")
+            return True
+            
+        except MemoryError as e:
+            logger.error(f"❌ Недостатньо пам'яті для {new_model_size}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Помилка перемикання на {new_model_size}: {e}")
+            return False
+    
+    def unload(self) -> bool:
+        """Вивантажує модель з пам'яті"""
+        if self._use_manager:
+            return model_manager.unload_model()
+        else:
+            self.model = None
+            import gc
+            gc.collect()
+            return True
     
     def _load_model_fallback(self) -> bool:
         """Fallback метод завантаження моделі"""
