@@ -1383,14 +1383,26 @@
             fileUpload.classList.remove('dragover');
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-                handleFile(files[0]);
+                const file = files[0];
+                if (file.size > 300 * 1024 * 1024) { // 300 MB
+                    showError('Файл перевищує 300 МБ. Будь ласка, виберіть менший файл.');
+                    fileInput.value = '';
+                    return;
+                }
+                handleFile(file);
             }
         }
 
         function handleFileSelect(e) {
             const files = e.target.files;
             if (files.length > 0) {
-                handleFile(files[0]);
+                const file = files[0];
+                if (file.size > 300 * 1024 * 1024) { // 300 MB
+                    showError('Файл перевищує 300 МБ. Будь ласка, виберіть менший файл.');
+                    fileInput.value = '';
+                    return;
+                }
+                handleFile(file);
             }
         }
 

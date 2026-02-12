@@ -12,7 +12,11 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 # Налаштування логування
 import logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Імпорт LanguageTool для орфографічної корекції
@@ -35,7 +39,8 @@ CPU_MAX_WORKERS = 3  # Ще більше зменшено для стабіль�
 CPU_CACHE_MAX_SIZE = 2  # Мінімальний кеш для економії пам'яті
 
 # Додаткові оптимізації для сервера 14GB RAM
-MAX_FILE_SIZE_MB = 3072  # Максимальний розмір файлу (3GB)
+MAX_FILE_SIZE_MB = 500  # Максимальний розмір файлу (500MB) - зменшено для безпеки
+MAX_UPLOAD_SIZE_MB = 300  # Максимальний розмір для завантаження (300MB)
 MAX_AUDIO_DURATION_MINUTES = 80  # Максимальна тривалість аудіо (60 хвилин)
 MEMORY_PRESSURE_THRESHOLD = 75.0  # Поріг тиску на пам'ять (75%)
 

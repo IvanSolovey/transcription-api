@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Any
 import logging
 from models import LocalTranscriptionService
+from models.config import MAX_UPLOAD_SIZE_MB
 from middleware import verify_api_key, verify_master_token, verify_master_token_from_query
 
 # Ініціалізуємо БД перед імпортом api_key_manager
@@ -28,7 +29,11 @@ from app.db.repositories.tasks import TaskRepository
 from app.db.models import TaskStatus as TaskStatusEnum
 
 # Налаштування логування
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -188,12 +193,11 @@ async def download_file_from_url(url: str) -> str:
             response = await client.get(str(url))
             response.raise_for_status()
             
-            # Створюємо тимчасовий файл
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
-            temp_file.write(response.content)
-            temp_file.close()
-            
-            return temp_file.name
+            # Створюємо тимчасовий файл з context manager
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as temp_file:
+                temp_file.write(response.content)
+                temp_file.flush()
+                return temp_file.name
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"File download failed: {str(e)}")
 
@@ -340,11 +344,15 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
         
         logger.info(f"Початок обробки задачі {task_id}")
         
-        # Виконуємо транскрипцію синхронно
-        if use_diarization:
-            result = transcription_service.transcribe_with_diarization(file_path, language, model_size)
-        else:
-            result = transcription_service.transcribe_simple(file_path, language, model_size)
+        # Виконуємо транскрипцію синхронно з обробкою помилок пам'яті
+        try:
+            if use_diarization:
+                result = transcription_service.transcribe_with_diarization(file_path, language, model_size)
+            else:
+                result = transcription_service.transcribe_simple(file_path, language, model_size)
+        except MemoryError as mem_err:
+            logger.error(f"⚠️ Недостатньо пам'яті для обробки задачі {task_id}: {mem_err}")
+            raise MemoryError(f"Недостатньо оперативної пам'яті для обробки файлу. Спробуйте менший файл або меншу модель (tiny/base/small).")
         
         # Оновлюємо статус на "completed"
         task_status.status = "completed"
@@ -366,6 +374,15 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
                 logger.info(f"Тимчасовий файл видалено: {file_path}")
             except Exception as e:
                 logger.warning(f"Не вдалося видалити тимчасовий файл: {e}")
+        
+        # Очищуємо кеш аудіо після успішної обробки
+        try:
+            transcription_service.clear_audio_cache()
+            import gc
+            gc.collect()
+            logger.debug(f"Пам'ять очищена після задачі {task_id}")
+        except Exception as e:
+            logger.warning(f"Помилка очищення пам'яті: {e}")
         
     except Exception as e:
         # Оновлюємо статус на "failed"
@@ -389,6 +406,11 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
         
         logger.error(f"Помилка обробки задачі {task_id}: {e}")
         
+        # Спеціальна обробка MemoryError
+        if isinstance(e, MemoryError):
+            logger.error(f"⚠️ КРИТИЧНО: Недостатньо пам'яті для обробки {task_id}")
+            task_status.error = "Недостатньо пам'яті для обробки файлу. Спробуйте менший файл або меншу модель."
+        
         # Видаляємо файл навіть при помилці (файл вже непотрібний)
         if os.path.exists(file_path):
             try:
@@ -396,6 +418,15 @@ def process_transcription_task_sync(task_id: str, file_path: str, language: str,
                 logger.info(f"Тимчасовий файл видалено після помилки: {file_path}")
             except Exception as cleanup_error:
                 logger.warning(f"Не вдалося видалити тимчасовий файл: {cleanup_error}")
+        
+        # Очищуємо кеш навіть при помилці
+        try:
+            transcription_service.clear_audio_cache()
+            import gc
+            gc.collect()
+            logger.debug(f"Пам'ять очищена після помилки в задачі {task_id}")
+        except Exception as cleanup_e:
+            logger.warning(f"Помилка очищення пам'яті після помилки: {cleanup_e}")
 
 async def worker():
     """Воркер для обробки задач з черги (оптимізований для CPU)"""
@@ -434,6 +465,14 @@ async def worker():
                 # Позначаємо задачу як виконану
                 task_queue.task_done()
                 logger.info(f"Воркер {worker_id} завершив задачу {task_data['task_id']}")
+                
+                # Очищення пам'яті після задачі
+                import gc
+                gc.collect()
+                
+                # Очищення пам'яті після задачі
+                import gc
+                gc.collect()
                 
             except asyncio.TimeoutError:
                 task_id = task_data['task_id']
@@ -523,12 +562,39 @@ async def transcribe_audio_file(
     try:
         # Обробка файлу або URL
         if file:
-            # Збереження завантаженого файлу
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.filename.split('.')[-1]}")
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.close()
-            temp_file_path = temp_file.name
+            # Перевірка розміру файлу ПЕРЕД завантаженням
+            file_size_mb = 0
+            if hasattr(file, 'size') and file.size:
+                file_size_mb = file.size / (1024 * 1024)
+            elif hasattr(file, 'spool_max_size'):
+                # Отримуємо розмір через content-length
+                file_size_mb = file.spool_max_size / (1024 * 1024) if file.spool_max_size else 0
+            
+            if file_size_mb > MAX_UPLOAD_SIZE_MB:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Файл завеликий: {file_size_mb:.1f}MB. Максимум {MAX_UPLOAD_SIZE_MB}MB"
+                )
+            
+            # Збереження завантаженого файлу з context manager та обробкою помилок
+            try:
+                content = await file.read()
+            except MemoryError:
+                raise HTTPException(
+                    status_code=507,
+                    detail=f"Недостатньо пам'яті для завантаження файлу {file_size_mb:.1f}MB"
+                )
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.filename.split('.')[-1]}") as temp_file:
+                temp_file.write(content)
+                temp_file.flush()
+                temp_file_path = temp_file.name
+            
+            # Очищуємо content з пам'яті
+            del content
+            import gc
+            gc.collect()
+            
             file_name = file.filename
             
         elif url:
@@ -635,12 +701,35 @@ async def transcribe_with_diarization(
     try:
         # Обробка файлу або URL
         if file:
-            # Збереження завантаженого файлу
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.filename.split('.')[-1]}")
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.close()
-            temp_file_path = temp_file.name
+            # Перевірка розміру файлу ПЕРЕД завантаженням
+            file_size_mb = 0
+            if hasattr(file, 'size') and file.size:
+                file_size_mb = file.size / (1024 * 1024)
+            
+            if file_size_mb > MAX_UPLOAD_SIZE_MB:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Файл завеликий: {file_size_mb:.1f}MB. Максимум {MAX_UPLOAD_SIZE_MB}MB"
+                )
+            
+            # Збереження завантаженого файлу з обробкою помилок пам'яті
+            try:
+                content = await file.read()
+            except MemoryError:
+                raise HTTPException(
+                    status_code=507,
+                    detail=f"Недостатньо пам'яті для завантаження файлу {file_size_mb:.1f}MB"
+                )
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.filename.split('.')[-1]}") as temp_file:
+                temp_file.write(content)
+                temp_file.flush()
+                temp_file_path = temp_file.name
+            
+            # Очищуємо content з пам'яті
+            del content
+            import gc
+            gc.collect()
             
         elif url:
             # Завантаження файлу з URL

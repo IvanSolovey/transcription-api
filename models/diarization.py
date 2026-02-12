@@ -92,6 +92,13 @@ class SimpleDiarizationService:
                 logger.info(f"Перший сегмент: {speech_segments[0][0]:.2f}с - {speech_segments[0][1]:.2f}с")
                 logger.info(f"Останній сегмент: {speech_segments[-1][0]:.2f}с - {speech_segments[-1][1]:.2f}с")
             
+            # Очищуємо пам'ять від великих масивів
+            del audio_int16
+            if not self.transcription_service:  # Якщо завантажили без кешу
+                del audio
+            import gc
+            gc.collect()
+            
             return speech_segments
             
         except Exception as e:
@@ -150,6 +157,11 @@ class SimpleDiarizationService:
             if in_speech and current_segment_start is not None:
                 segment_end = len(audio_int16) / sr
                 speech_segments.append((current_segment_start, segment_end))
+            
+            # Очищуємо пам'ять від великих масивів
+            del audio_int16
+            import gc
+            gc.collect()
             
             logger.info(f"VAD знайшов {len(speech_segments)} сегментів мовлення")
             return speech_segments

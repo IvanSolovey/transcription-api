@@ -620,13 +620,27 @@ class LocalTranscriptionService:
             elapsed_time = time.time() - start_time
             logger.info(f"Транскрипція з діаризацією завершена: {len(processed_segments)} сегментів за {elapsed_time:.2f} секунд")
             
+            # Очищуємо великий аудіо масив з пам'яті
+            del audio
+            
             # Очищуємо кеші для економії пам'яті
             self.clear_all_caches()
+            
+            # Примусове очищення пам'яті
+            import gc
+            gc.collect()
             
             return result
             
         except Exception as e:
             logger.error(f"Помилка транскрипції з діаризацією: {e}")
+            # Очищуємо пам'ять навіть при помилці
+            try:
+                del audio
+            except:
+                pass
+            import gc
+            gc.collect()
             raise
     
     def _process_diarization_segments_parallel(self, audio: np.ndarray, sr: int, 
